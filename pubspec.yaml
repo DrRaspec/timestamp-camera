@@ -1,0 +1,28 @@
+name: customize_camera
+description: "A new Flutter project."
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.2
+
+dependencies:
+  camera: ^0.12.2
+  get: 4.7.3
+
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+dependency_overrides:
+  camera_android_camerax:
+    path: packages/camera_android_camerax
+  camera_avfoundation:
+    path: packages/camera_avfoundation
+
+flutter:
+  uses-material-design: true
