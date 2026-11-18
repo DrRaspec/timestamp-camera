@@ -6,11 +6,14 @@
 .DS_Store
 .atom/
 .build/
+**/build/
 .buildlog/
 .history
 .svn/
 .swiftpm/
 migrate_working_dir/
+**/.gradle/
+**/local.properties
 
 # IntelliJ related
 *.iml

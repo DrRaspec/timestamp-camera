@@ -8,7 +8,8 @@ final class PhotoStamper {
 
   private let lock = NSLock()
   private var _lines: [String] = []
-  private var _quality: CGFloat = 0.85
+  // Same default as Android: about half the size of 0.85 with little visible loss.
+  private var _quality: CGFloat = 0.6
   // 1 = full size, 2 = half width/height. Same meaning as on Android.
   private var _sampleSize: Int = 1
 
@@ -54,6 +55,9 @@ final class PhotoStamper {
       case "clearStampText":
         PhotoStamper.shared.set(lines: [], quality: nil)
         result(nil)
+      case "awaitStamp":
+        // iOS writes the file before takePicture returns, so there is nothing to wait for.
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -75,6 +79,7 @@ final class PhotoStamper {
 
   func stampedJPEG(from photo: AVCapturePhoto) -> Data? {
     let lines = self.lines
+    let start = CFAbsoluteTimeGetCurrent()
     guard !lines.isEmpty, let upright = uprightImage(from: photo, sampleSize: sampleSize)
     else { return nil }
     let size = upright.size
@@ -125,7 +130,8 @@ final class PhotoStamper {
       tiff[kCGImagePropertyTIFFOrientation as String] = 1
       props[kCGImagePropertyTIFFDictionary as String] = tiff
     }
-    props[kCGImageDestinationLossyCompressionQuality as String] = quality
+    let q = quality
+    props[kCGImageDestinationLossyCompressionQuality as String] = q
 
     let data = NSMutableData()
     guard
@@ -133,6 +139,10 @@ final class PhotoStamper {
     else { return nil }
     CGImageDestinationAddImage(dest, outImage, props as CFDictionary)
     guard CGImageDestinationFinalize(dest) else { return nil }
+    NSLog(
+      "PhotoStamper: Saved %ldx%ld, %.1f KB, quality %ld, total %ld ms",
+      outImage.width, outImage.height, Double(data.length) / 1024, Int((q * 100).rounded()),
+      Int((CFAbsoluteTimeGetCurrent() - start) * 1000))
     return data as Data
   }
 

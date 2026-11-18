@@ -16,8 +16,6 @@ import androidx.core.content.ContextCompat;
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import kotlin.Result;
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
@@ -28,8 +26,6 @@ import kotlin.jvm.functions.Function1;
  * native class or an instance of that class.
  */
 class ImageCaptureProxyApi extends PigeonApiImageCapture {
-  private static final ExecutorService STAMP_EXECUTOR = Executors.newSingleThreadExecutor();
-
   static final String TEMPORARY_FILE_NAME = "CAP";
   static final String JPG_FILE_TYPE = ".jpg";
 
@@ -131,25 +127,49 @@ class ImageCaptureProxyApi extends PigeonApiImageCapture {
 
   // Captures to memory and lets PhotoStamper write the only file, which is faster than letting
   // CameraX save a JPEG that then has to be read back, stamped and rewritten.
+  //
+  // The path goes back to Dart as soon as the camera delivers the image, so the next photo can be
+  // taken while this one is stamped. The file is complete only once the photo_stamp channel's
+  // awaitStamp call for that path returns.
   private void takeStampedPicture(
       @NonNull ImageCapture imageCapture,
       @NonNull File file,
       @NonNull SystemServicesManager systemServicesManager,
       @NonNull Function1<? super Result<String>, Unit> callback) {
     final Executor main = ContextCompat.getMainExecutor(getPigeonRegistrar().getContext());
+    final String path = file.getAbsolutePath();
+    // Taken now, so a later setStampText for the next photo can't change this one.
+    final PhotoStamper.Settings settings = PhotoStamper.snapshot();
     imageCapture.takePicture(
-        STAMP_EXECUTOR,
+        PhotoStamper.EXECUTOR,
         new ImageCapture.OnImageCapturedCallback() {
           @Override
           public void onCaptureSuccess(@NonNull ImageProxy image) {
+            final PhotoStamper.Capture capture;
             try {
-              PhotoStamper.stampImage(image, file);
-              main.execute(() -> ResultCompat.success(file.getAbsolutePath(), callback));
-            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+              capture = PhotoStamper.read(image);
+            } catch (RuntimeException | OutOfMemoryError e) {
               main.execute(() -> ResultCompat.failure(e, callback));
+              return;
             } finally {
+              // Closed before stamping so the camera gets its buffer back for the next photo.
               image.close();
             }
+            main.execute(
+                () -> {
+                  PhotoStamper.markPending(path);
+                  ResultCompat.success(path, callback);
+                });
+
+            String error = null;
+            try {
+              PhotoStamper.stamp(capture, settings, file);
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+              file.delete();
+              error = e.toString();
+            }
+            final String failure = error;
+            main.execute(() -> PhotoStamper.finish(path, failure));
           }
 
           @Override

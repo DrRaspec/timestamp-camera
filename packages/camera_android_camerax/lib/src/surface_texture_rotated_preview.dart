@@ -53,7 +53,10 @@ final class SurfaceTextureRotatedPreview extends StatefulWidget {
 final class _SurfaceTextureRotatedPreviewState extends State<SurfaceTextureRotatedPreview> {
   late StreamSubscription<DeviceOrientation> deviceOrientationSubscription;
   late int preappliedRotationQuarterTurns;
-  late Future<int> defaultDisplayRotationQuarterTurns;
+  // FORK: a resolved value instead of a Future (upstream), so the preview
+  // doesn't blink off while the new rotation is fetched. See
+  // image_reader_rotated_preview.dart.
+  late int defaultDisplayRotationQuarterTurns;
 
   Future<int> _getCurrentDefaultDisplayRotationQuarterTurns() async {
     final int currentDefaultDisplayRotationQuarterTurns = await widget.deviceOrientationManager
@@ -66,12 +69,13 @@ final class _SurfaceTextureRotatedPreviewState extends State<SurfaceTextureRotat
     preappliedRotationQuarterTurns = getPreAppliedQuarterTurnsRotationFromDeviceOrientation(
       widget.initialDeviceOrientation,
     );
-    defaultDisplayRotationQuarterTurns = Future<int>.value(
-      getQuarterTurnsFromSurfaceRotationConstant(widget.initialDefaultDisplayRotation),
+    defaultDisplayRotationQuarterTurns = getQuarterTurnsFromSurfaceRotationConstant(
+      widget.initialDefaultDisplayRotation,
     );
     deviceOrientationSubscription = widget.deviceOrientationStream.listen((
       DeviceOrientation event,
-    ) {
+    ) async {
+      final int quarterTurns = await _getCurrentDefaultDisplayRotationQuarterTurns();
       // Ensure that we aren't updating the state if the widget is being destroyed.
       if (!mounted) {
         return;
@@ -81,7 +85,7 @@ final class _SurfaceTextureRotatedPreviewState extends State<SurfaceTextureRotat
         preappliedRotationQuarterTurns = getPreAppliedQuarterTurnsRotationFromDeviceOrientation(
           event,
         );
-        defaultDisplayRotationQuarterTurns = _getCurrentDefaultDisplayRotationQuarterTurns();
+        defaultDisplayRotationQuarterTurns = quarterTurns;
       });
     });
     super.initState();
@@ -95,23 +99,13 @@ final class _SurfaceTextureRotatedPreviewState extends State<SurfaceTextureRotat
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<int>(
-      future: defaultDisplayRotationQuarterTurns,
-      builder: (BuildContext context, AsyncSnapshot<int> snapshot) {
-        if (snapshot.connectionState == ConnectionState.done) {
-          // Rotated preview according to current default display rotation,
-          // but subtract out rotation applied by the CameraPreview widget
-          // (see camera/camera/lib/src/camera_preview.dart) that is not
-          // correct for this plugin.
-          final int currentDefaultDisplayRotation = snapshot.data!;
-          final int rotationCorrection =
-              currentDefaultDisplayRotation - preappliedRotationQuarterTurns;
+    // Rotated preview according to current default display rotation,
+    // but subtract out rotation applied by the CameraPreview widget
+    // (see camera/camera/lib/src/camera_preview.dart) that is not
+    // correct for this plugin.
+    final int rotationCorrection =
+        defaultDisplayRotationQuarterTurns - preappliedRotationQuarterTurns;
 
-          return RotatedBox(quarterTurns: rotationCorrection, child: widget.child);
-        } else {
-          return const SizedBox.shrink();
-        }
-      },
-    );
+    return RotatedBox(quarterTurns: rotationCorrection, child: widget.child);
   }
 }

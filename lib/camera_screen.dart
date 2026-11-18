@@ -6,7 +6,7 @@ import 'package:get/get.dart';
 
 import 'controllers/camera_screen_controller.dart';
 import 'photo_stamp.dart';
-import 'photo_view_screen.dart';
+import 'photo_view_sheet.dart';
 
 class CameraTestScreen extends GetView<CameraScreenController> {
   const CameraTestScreen(this._tag, {super.key});
@@ -19,6 +19,10 @@ class CameraTestScreen extends GetView<CameraScreenController> {
     final tag = 'camera-${DateTime.now().microsecondsSinceEpoch}';
     return Get.to(
       () => CameraTestScreen(tag),
+      // A sliding/fading transition blends the white start screen with this
+      // black screen and the not-yet-started preview, which looks like a
+      // black-and-white flicker.
+      transition: Transition.noTransition,
       binding: BindingsBuilder(() {
         Get.put(CameraScreenController(), tag: tag);
       }),
@@ -68,21 +72,28 @@ class CameraTestScreen extends GetView<CameraScreenController> {
                 final d = _Dims.forHeight(box.maxHeight);
                 return Column(
                   children: [
-                    _topBar(d),
-                    Expanded(child: _preview(camera)),
+                    Expanded(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _preview(camera),
+                          Positioned(
+                            top: 8,
+                            left: 16,
+                            right: 16,
+                            child: _topBar(d),
+                          ),
+                        ],
+                      ),
+                    ),
                     SizedBox(height: d.gap),
                     _controls(d),
                     SizedBox(height: d.gap),
-                    Obx(
-                      () => AnimatedSize(
-                        duration: const Duration(milliseconds: 200),
-                        child: controller.shots.isEmpty
-                            ? const SizedBox(width: double.infinity)
-                            : Padding(
-                                padding: EdgeInsets.only(bottom: d.gap / 2),
-                                child: _thumbnails(d),
-                              ),
-                      ),
+                    // Always reserved, so the preview doesn't resize when the
+                    // first photo is taken.
+                    Padding(
+                      padding: EdgeInsets.only(bottom: d.gap / 2),
+                      child: _thumbnails(d),
                     ),
                   ],
                 );
@@ -95,31 +106,46 @@ class CameraTestScreen extends GetView<CameraScreenController> {
   }
 
   Widget _topBar(_Dims d) {
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: 16, vertical: d.gap / 3),
-      child: Row(
-        children: [
-          Obx(
-            () => _RoundIconButton(
-              icon: switch (controller.flash.value) {
-                FlashMode.auto => Icons.flash_auto,
-                FlashMode.always => Icons.flash_on,
-                _ => Icons.flash_off,
-              },
-              size: d.topButton,
-              onTap: controller.cycleFlash,
-            ),
+    return Row(
+      children: [
+        Obx(
+          () => _RoundIconButton(
+            icon: switch (controller.flash.value) {
+              FlashMode.auto => Icons.flash_auto,
+              FlashMode.always => Icons.flash_on,
+              _ => Icons.flash_off,
+            },
+            size: d.topButton,
+            onTap: controller.cycleFlash,
           ),
-          const Spacer(),
-          Obx(
-            () => _RoundIconButton(
-              icon: Icons.apps,
-              size: d.topButton,
-              active: controller.showGrid.value,
-              onTap: controller.toggleGrid,
-            ),
+        ),
+        const Spacer(),
+        Obx(
+          () => _QualityButton(
+            percent: controller.quality.value,
+            height: d.topButton,
+            onTap: _showQualitySheet,
           ),
-        ],
+        ),
+        const SizedBox(width: 12),
+        Obx(
+          () => _RoundIconButton(
+            icon: Icons.apps,
+            size: d.topButton,
+            active: controller.showGrid.value,
+            onTap: controller.toggleGrid,
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showQualitySheet() {
+    Get.bottomSheet(
+      _QualitySheet(controller),
+      backgroundColor: const Color(0xFF1C1C1C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
     );
   }
@@ -134,6 +160,7 @@ class CameraTestScreen extends GetView<CameraScreenController> {
           child: Stack(
             fit: StackFit.expand,
             children: [
+              const ColoredBox(color: Colors.black),
               FittedBox(
                 fit: BoxFit.cover,
                 child: SizedBox(
@@ -158,6 +185,15 @@ class CameraTestScreen extends GetView<CameraScreenController> {
                   ),
                 ),
               ),
+              Obx(
+                () => IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: controller.shutterBlink.value ? 0.6 : 0,
+                    duration: const Duration(milliseconds: 80),
+                    child: const ColoredBox(color: Colors.black),
+                  ),
+                ),
+              ),
             ],
           ),
         );
@@ -175,11 +211,31 @@ class CameraTestScreen extends GetView<CameraScreenController> {
               alignment: Alignment.centerLeft,
               child: Obx(
                 () => Opacity(
-                  opacity: controller.busy.value ? 0.4 : 1,
-                  child: _RoundIconButton(
-                    icon: Icons.close,
-                    size: d.sideButton,
-                    onTap: controller.close,
+                  opacity: controller.canLeave ? 1 : 0.4,
+                  // Extra transparent padding enlarges the tap area; the shift
+                  // keeps the circle aligned with the screen margin.
+                  child: Transform.translate(
+                    offset: const Offset(-10, 0),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: controller.close,
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Container(
+                          width: d.doneHeight,
+                          height: d.doneHeight,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.white24,
+                          ),
+                          child: Icon(
+                            Icons.close,
+                            size: d.doneHeight * 0.55,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -220,7 +276,7 @@ class CameraTestScreen extends GetView<CameraScreenController> {
               alignment: Alignment.centerRight,
               child: Obx(
                 () => OutlinedButton(
-                  onPressed: controller.busy.value ? null : controller.done,
+                  onPressed: controller.canLeave ? controller.done : null,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.white,
                     backgroundColor: const Color(0xFF2A2A2A),
@@ -253,21 +309,38 @@ class CameraTestScreen extends GetView<CameraScreenController> {
         color: const Color(0xFF111111),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Obx(
-        () => ListView.separated(
+      child: Obx(() {
+        final pending = controller.pending.toSet();
+        return ListView.separated(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           itemCount: controller.shots.length,
           separatorBuilder: (_, _) => const SizedBox(width: 6),
-          itemBuilder: (context, i) {
+          itemBuilder: (context, position) {
+            final i = controller.shots.length - 1 - position;
             final path = controller.shots[i];
+            if (pending.contains(path)) {
+              return Padding(
+                padding: EdgeInsets.only(top: pad, right: pad),
+                child: Container(
+                  width: imageWidth,
+                  height: imageHeight,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2A2A2A),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                ),
+              );
+            }
             return Padding(
               padding: EdgeInsets.only(top: pad, right: pad),
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
                   GestureDetector(
-                    onTap: () => PhotoViewScreen.open(controller, i),
+                    onTap: () {
+                      if (pending.isEmpty) PhotoViewSheet.open(controller, i);
+                    },
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(6),
                       child: Image.file(
@@ -308,8 +381,8 @@ class CameraTestScreen extends GetView<CameraScreenController> {
               ),
             );
           },
-        ),
-      ),
+        );
+      }),
     );
   }
 }
@@ -324,13 +397,107 @@ class _Dims {
 
   double get gap => 24 * k;
   double get topButton => 40 * k;
-  double get sideButton => 48 * k;
-  double get sidePadding => 44 * k;
+  double get sidePadding => 16 * k;
   double get shutter => 80 * k;
   double get doneWidth => 96 * k;
   double get doneHeight => 50 * k;
   double get strip => 112 * k;
   double get badge => (30 * k).clamp(26.0, 30.0);
+}
+
+/// Pill showing the current photo quality; tapping it opens [_QualitySheet].
+class _QualityButton extends StatelessWidget {
+  const _QualityButton({
+    required this.percent,
+    required this.height,
+    required this.onTap,
+  });
+
+  final int percent;
+  final double height;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: height,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(height / 2),
+          color: Colors.black45,
+        ),
+        child: Text(
+          '$percent%',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: height * 0.38,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Lets the user trade file size for detail. Takes effect on the next photo.
+class _QualitySheet extends StatelessWidget {
+  const _QualitySheet(this.controller);
+
+  final CameraScreenController controller;
+
+  static const _textColor = Colors.white;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Obx(
+              () => Text(
+                'Photo quality: ${controller.quality.value}%',
+                style: const TextStyle(
+                  color: _textColor,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Lower quality makes smaller files with less detail. '
+              'It applies to the next photo.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            Obx(
+              () => Slider(
+                value: controller.quality.value.toDouble(),
+                min: PhotoStamp.minQuality.toDouble(),
+                max: PhotoStamp.maxQuality.toDouble(),
+                divisions: (PhotoStamp.maxQuality - PhotoStamp.minQuality) ~/ 5,
+                label: '${controller.quality.value}%',
+                onChanged: (v) => controller.setQuality(v.round()),
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () =>
+                    controller.setQuality(PhotoStamp.defaultQuality),
+                child: Text('Reset to ${PhotoStamp.defaultQuality}%'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _RoundIconButton extends StatelessWidget {
@@ -355,7 +522,7 @@ class _RoundIconButton extends StatelessWidget {
         height: size,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: active ? Colors.white : Colors.white24,
+          color: active ? Colors.white : Colors.black45,
         ),
         child: Icon(
           icon,

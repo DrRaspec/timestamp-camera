@@ -73,7 +73,11 @@ final class ImageReaderRotatedPreview extends StatefulWidget {
 
 final class _ImageReaderRotatedPreviewState extends State<ImageReaderRotatedPreview> {
   late DeviceOrientation deviceOrientation;
-  late Future<int> defaultDisplayRotationDegrees;
+  // FORK: a resolved value instead of a Future (upstream). Upstream rebuilt
+  // with a pending Future on every device orientation event and showed an
+  // empty box until it resolved, so the preview blinked off for a frame
+  // shortly after opening and whenever the device was tilted.
+  late int defaultDisplayRotationDegrees;
   late StreamSubscription<DeviceOrientation> deviceOrientationSubscription;
 
   Future<int> _getCurrentDefaultDisplayRotationDegrees() async {
@@ -86,10 +90,13 @@ final class _ImageReaderRotatedPreviewState extends State<ImageReaderRotatedPrev
   @override
   void initState() {
     deviceOrientation = widget.initialDeviceOrientation;
-    defaultDisplayRotationDegrees = Future<int>.value(
-      getQuarterTurnsFromSurfaceRotationConstant(widget.initialDefaultDisplayRotation) * 90,
-    );
-    deviceOrientationSubscription = widget.deviceOrientation.listen((DeviceOrientation event) {
+    defaultDisplayRotationDegrees =
+        getQuarterTurnsFromSurfaceRotationConstant(widget.initialDefaultDisplayRotation) * 90;
+    deviceOrientationSubscription = widget.deviceOrientation.listen((
+      DeviceOrientation event,
+    ) async {
+      // Keep showing the preview with the previous rotation until the new one is known.
+      final int degrees = await _getCurrentDefaultDisplayRotationDegrees();
       // Ensure that we aren't updating the state if the widget is being destroyed.
       if (!mounted) {
         return;
@@ -97,7 +104,7 @@ final class _ImageReaderRotatedPreviewState extends State<ImageReaderRotatedPrev
 
       setState(() {
         deviceOrientation = event;
-        defaultDisplayRotationDegrees = _getCurrentDefaultDisplayRotationDegrees();
+        defaultDisplayRotationDegrees = degrees;
       });
     });
     super.initState();
@@ -132,36 +139,26 @@ final class _ImageReaderRotatedPreviewState extends State<ImageReaderRotatedPrev
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<int>(
-      future: defaultDisplayRotationDegrees,
-      builder: (BuildContext context, AsyncSnapshot<int> snapshot) {
-        if (snapshot.connectionState == ConnectionState.done) {
-          final int currentDefaultDisplayRotation = snapshot.data!;
-          final double rotationDegrees = _computeRotationDegrees(
-            deviceOrientation,
-            currentDefaultDisplayRotation,
-            sensorOrientationDegrees: widget.sensorOrientationDegrees,
-            sign: widget.facingSign,
-          );
-
-          // If the camera is front facing (widget.facingSign is 1 for front
-          // cameras, -1 for back cameras), mirror the camera preview
-          // according to the current device orientation.
-          Widget cameraPreview = widget.child;
-          if (widget.facingSign == 1) {
-            if (deviceOrientation == DeviceOrientation.portraitDown ||
-                deviceOrientation == DeviceOrientation.portraitUp) {
-              cameraPreview = Transform.scale(scaleY: -1, child: cameraPreview);
-            } else {
-              cameraPreview = Transform.scale(scaleX: -1, child: cameraPreview);
-            }
-          }
-
-          return RotatedBox(quarterTurns: rotationDegrees ~/ 90, child: cameraPreview);
-        } else {
-          return const SizedBox.shrink();
-        }
-      },
+    final double rotationDegrees = _computeRotationDegrees(
+      deviceOrientation,
+      defaultDisplayRotationDegrees,
+      sensorOrientationDegrees: widget.sensorOrientationDegrees,
+      sign: widget.facingSign,
     );
+
+    // If the camera is front facing (widget.facingSign is 1 for front
+    // cameras, -1 for back cameras), mirror the camera preview
+    // according to the current device orientation.
+    Widget cameraPreview = widget.child;
+    if (widget.facingSign == 1) {
+      if (deviceOrientation == DeviceOrientation.portraitDown ||
+          deviceOrientation == DeviceOrientation.portraitUp) {
+        cameraPreview = Transform.scale(scaleY: -1, child: cameraPreview);
+      } else {
+        cameraPreview = Transform.scale(scaleX: -1, child: cameraPreview);
+      }
+    }
+
+    return RotatedBox(quarterTurns: rotationDegrees ~/ 90, child: cameraPreview);
   }
 }

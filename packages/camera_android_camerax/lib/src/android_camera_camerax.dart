@@ -207,11 +207,19 @@ class AndroidCameraCameraX extends CameraPlatform {
 
   /// Whether zero-shutter-lag capture was requested via
   /// [setZeroShutterLagEnabled].
+  ///
+  /// Off, as upstream. ZSL returns a buffered frame from just before the tap,
+  /// so after a quick camera move the photo can show the old scene. Calling
+  /// the setter after the camera opens recreates ImageCapture, which restarts
+  /// the camera session and makes the preview flicker.
   bool _zeroShutterLagEnabled = false;
 
-  /// The JPEG compression quality requested via [setJpegImageQuality], if
-  /// any.
-  int? _jpegQuality;
+  /// The JPEG compression quality requested via [setJpegImageQuality].
+  ///
+  /// FORK: 85 by default (upstream: null, the CameraX default), for the same
+  /// reason as [_zeroShutterLagEnabled]. The photo stamper re-encodes the
+  /// photo anyway.
+  int? _jpegQuality = 85;
 
   /// Whether or not the default rotation for [UseCase]s needs to be set
   /// manually because the capture orientation was previously locked.
@@ -421,12 +429,14 @@ class AndroidCameraCameraX extends CameraPlatform {
     _flutterSurfaceTextureId = await preview!.setSurfaceProvider(systemServicesManager);
 
     // Configure ImageCapture instance.
+    // FORK: only request zero-shutter-lag where the camera supports it.
+    final bool zslSupported = await chosenCameraInfo?.isZslSupported() ?? false;
     imageCapture = ImageCapture(
       resolutionSelector: _presetResolutionSelector,
       /* use CameraX default target rotation */ targetRotation: await deviceOrientationManager
           .getDefaultDisplayRotation(),
       jpegQuality: _jpegQuality,
-      zeroShutterLagEnabled: _zeroShutterLagEnabled,
+      zeroShutterLagEnabled: _zeroShutterLagEnabled && zslSupported,
     );
 
     // Configure VideoCapture and Recorder instances.
@@ -1157,7 +1167,8 @@ class AndroidCameraCameraX extends CameraPlatform {
       resolutionSelector: _presetResolutionSelector,
       targetRotation: targetRotation,
       jpegQuality: _jpegQuality,
-      zeroShutterLagEnabled: _zeroShutterLagEnabled,
+      // FORK: _zeroShutterLagEnabled defaults to true, so check support here too.
+      zeroShutterLagEnabled: _zeroShutterLagEnabled && await isZeroShutterLagSupported(0),
     );
   }
 

@@ -30,9 +30,9 @@ GetX handles state and navigation.
 | `lib/main.dart` | `GetMaterialApp` with the routes from `routes.dart` |
 | `lib/routes.dart` | Routes and the binding that creates each screen's controller |
 | `lib/start_screen.dart`, `controllers/start_controller.dart` | Asks for camera permission, then opens the camera |
-| `lib/camera_screen.dart`, `controllers/camera_screen_controller.dart` | Preview, flash, grid, shutter, photo strip, Done/close |
-| `lib/photo_view_screen.dart`, `controllers/photo_view_controller.dart` | Full-screen viewer with swipe, thumbnail strip, delete |
-| `lib/photo_stamp.dart` | Dart side of the `photo_stamp` method channel |
+| `lib/camera_screen.dart`, `controllers/camera_screen_controller.dart` | Preview, flash, grid, quality, shutter, photo strip (newest first), Done/close |
+| `lib/photo_view_sheet.dart`, `controllers/photo_view_controller.dart` | Photo viewer in a bottom sheet: swipe between photos, pinch to zoom, thumbnail strip, delete. Close with the round button at the top right or by dragging the sheet or the photo down |
+| `lib/photo_stamp.dart` | Dart side of the `photo_stamp` method channel, including the quality range and default |
 
 `CameraScreenController` is named that way to avoid clashing with the
 `camera` package's `CameraController`.
@@ -69,11 +69,23 @@ Both copies are based on the current pub.dev releases.
 - `PhotoStamper.java` (new) registers the `photo_stamp` channel and draws the
   stamp. It decodes the captured JPEG from memory (optionally downscaled with
   `sampleSize`; default 1, full size), turns it upright, draws the text in
-  the bottom-right and writes the file at `quality` (default 85).
+  the bottom-right and writes the file at `quality` (default 60).
 - `ImageCaptureProxyApi.java`: when a stamp is set, `takePicture()` captures
   to memory and lets `PhotoStamper` write the only file on a background
-  thread. Without a stamp it saves the file the stock way.
+  thread. The path is returned before the file is finished, so wait for
+  `PhotoStamp.waitUntilWritten(path)` before using the file. Without a stamp
+  it saves the file the stock way.
 - `CameraAndroidCameraxPlugin.java` calls `PhotoStamper.register(...)`.
+- `lib/src/android_camera_camerax.dart`: camera JPEG quality 85 at creation
+  and JPEG quality 85 are the defaults and are applied when the camera is
+  created. Calling `setZeroShutterLagEnabled` or `setJpegImageQuality` after
+  the camera opens rebuilds the capture pipeline, which made the preview
+  flicker on open and glitch on the first shot.
+- `lib/src/image_reader_rotated_preview.dart` and
+  `surface_texture_rotated_preview.dart`: the preview keeps its previous
+  rotation while a new one is fetched. Upstream showed an empty box for a
+  frame on every device orientation event, so the preview blinked black
+  shortly after opening and when the phone was tilted.
 
 **`camera_avfoundation` 0.11.1** (iOS)
 
@@ -151,12 +163,16 @@ them.
 
 ## Notes
 
+- The saved photo's JPEG quality defaults to 60 and can be changed by the
+  user with the percentage button at the top of the camera screen (20–100%).
+  It applies from the next photo. The setting is not remembered between
+  camera sessions.
 - The camera uses `ResolutionPreset.veryHigh`, so Android photos are
   1080×1920 and match the 16:9 preview. On a PLF110 this takes about 500 ms
   per photo (camera capture about 330 ms, stamping about 115–155 ms), compared with about 930 ms for
   `ResolutionPreset.max` (12MP) downscaled by half. Zero-shutter-lag is
-  turned on when the camera supports it, and the camera's JPEG quality is 85,
-  because the stamper re-encodes the photo anyway.
+  off, because it can return an older frame after a quick camera move. The
+  camera's JPEG quality is 85, because the stamper re-encodes the photo anyway.
 - An earlier version used CameraX `OverlayEffect` for the stamp. It cannot
   target photo capture alone, and applying it to the preview broke the
   preview's rotation and size. Don't bring it back.

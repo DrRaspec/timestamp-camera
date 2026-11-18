@@ -49,11 +49,19 @@ Channel name: `photo_stamp` (`MethodChannel`, standard codec). Dart side:
 
 | Method | Arguments | Effect |
 | --- | --- | --- |
-| `setStampText` | `lines: List<String>`, `quality: int` (1–100, default 85), `sampleSize: int` (default 1) | Stores the stamp. Empty strings are dropped. |
-| `clearStampText` | none | Clears the lines, so later captures are not stamped. |
+| `setStampText` | `lines: List<String>`, `quality: int` (1–100, default 60), `sampleSize: int` (default 1) | Stores the stamp. Empty strings are dropped. Each saved photo is logged with its resolution, size, quality and timing (`PhotoStamper` in logcat, `NSLog` on iOS). |
+| `clearStampText` | none | Clears the lines, so later captures are not stamped. On Android it also frees the bitmap the stamper keeps between shots. |
+| `awaitStamp` | `path: String` | Returns once the photo at `path` is fully written, or fails with `stampFailed`. Returns at once on iOS. |
 
 Things to know about this contract:
 
+- **On Android the file is not ready when `takePicture()` returns.** The path
+  comes back as soon as the camera delivers the image, and the stamp and
+  encode finish on a background thread. Call `awaitStamp`
+  (`PhotoStamp.waitUntilWritten(path)` in Dart) before reading, showing,
+  uploading or deleting the file. If stamping fails, the file is deleted and
+  `awaitStamp` reports the error. The stamp settings are copied when the
+  photo is taken, so changing them for the next photo doesn't affect this one.
 - **Global state:** the stamp is stored in a static or singleton for the whole
   process. Once set, **every** `takePicture()` call in the app is stamped,
   including from other screens, until `clearStampText` is called. In a real
@@ -62,19 +70,31 @@ Things to know about this contract:
 - **`sampleSize`** works on both platforms (1 = full size, 2 = half width and
   height).
 - **`quality`** works on both platforms (iOS converts it to 0–1). The default
-  is 85 on both.
+  is 60 on both, and the demo app lets the user change it from the quality
+  button on the camera screen (20–100%, applied from the next photo). On the
+  PLF110 one 1080×1920 test photo was 302 KB at 85 and 160 KB at 60 (47%
+  smaller, PSNR 46.3 dB against 39.6 dB). Sizes vary by scene, and iOS sizes
+  have not been measured.
 
 ## 2. Android (`packages/camera_android_camerax`)
 
-Files changed from upstream 0.7.6+1, all in
+Files changed from upstream 0.7.6+1, in
 `android/src/main/java/io/flutter/plugins/camerax/`:
 
 | File | Change |
 | --- | --- |
-| `PhotoStamper.java` | **New.** Registers the channel, holds the stamp settings, and stamps an in-memory capture (`stampImage`). |
-| `ImageCaptureProxyApi.java` | `takePicture()`: if a stamp is set, captures to memory with `OnImageCapturedCallback` and calls `PhotoStamper.stampImage` on a single background thread. Without a stamp, it saves the file the stock way. |
+| `PhotoStamper.java` | **New.** Registers the channel, holds the stamp settings, copies a capture out of the camera's image (`read`) and stamps it (`stamp`). Also tracks which files are still being written for `awaitStamp`. |
+| `ImageCaptureProxyApi.java` | `takePicture()`: if a stamp is set, captures to memory with `OnImageCapturedCallback`, copies the JPEG out, closes the image, returns the path to Dart, and then calls `PhotoStamper.stamp` on a single background thread. Without a stamp, it saves the file the stock way. |
 | `CameraAndroidCameraxPlugin.java` | Calls `PhotoStamper.register(binding.getBinaryMessenger())` in `onAttachedToEngine`. |
 | `ProcessCameraProviderProxyApi.java` | Back to upstream behaviour; no changes remain. |
+
+Dart files changed in the same plugin, in `lib/src/`. These are not about
+stamping; they fix two problems seen on a PLF110 (Android 16):
+
+| File | Change |
+| --- | --- |
+| `android_camera_camerax.dart` | Camera JPEG quality 85 is the default and is applied when the camera is created. Upstream leaves it unset and the app had to call `setJpegImageQuality` after opening, which rebuilds the capture pipeline and made the preview flicker. Calling that setter later still works but brings the flicker back. Zero-shutter-lag stays off (the upstream default): with it on, a photo can show an older frame after a quick camera move. |
+| `image_reader_rotated_preview.dart`, `surface_texture_rotated_preview.dart` | The preview keeps its previous rotation while a new one is fetched. Upstream replaced the preview with an empty box for a frame on every device-orientation event, so it blinked black about 300 ms after opening and whenever the phone was tilted. Search for `FORK` to find each change. |
 
 ### Capture pipeline (stamp set)
 
@@ -87,7 +107,11 @@ Files changed from upstream 0.7.6+1, all in
 4. Draw the text with a `StaticLayout`: right-aligned, text size 3.5% and
    margin 3% of the short side, white with a dark shadow.
 5. `Bitmap.compress(JPEG, quality)` into a temporary file in `getCacheDir()`,
-   named `CAP*.jpg`. `ImageProxy.close()` is called in `finally`.
+   named `CAP*.jpg`.
+
+The `ImageProxy` is closed right after its JPEG bytes are copied (step 1), so
+the camera can take the next photo while steps 2–5 run. The decoded bitmap is
+kept and reused for the next shot (`inBitmap`) until `clearStampText`.
 
 ### Measured on the PLF110 (`ResolutionPreset.veryHigh`, 1080×1920)
 
@@ -97,7 +121,10 @@ Files changed from upstream 0.7.6+1, all in
 | Decode | ~25–50 ms |
 | Draw | ~1–3 ms |
 | Encode + write | ~90–105 ms |
-| **Whole `takePicture()`** | **~460–540 ms** (first shot after opening ~650 ms) |
+| **Capture to finished file** | **~460–540 ms** (first shot after opening ~650 ms) |
+
+These were measured when `takePicture()` waited for the stamp. It now returns
+after the camera capture; the new timing has not been measured yet.
 
 A capture with no stamp takes ~390 ms on the same device, so stamping adds
 about 110 ms.
@@ -236,7 +263,8 @@ To upgrade:
 1. Check on pub.dev which plugin versions the new `camera` release requires.
 2. Download those plugin releases.
 3. Re-apply the changes from the tables in sections 2 and 3. Search for
-   `PhotoStamper` to find each hook point: three on Android, four on iOS.
+   `PhotoStamper` to find each hook point (three on Android, four on iOS),
+   then `FORK` for the three Dart changes in `camera_android_camerax/lib`.
 4. Don't edit generated Pigeon files (`*.g.kt`, `*.g.dart`, `*.g.swift`).
    Upstream regenerates them, and the stamp code doesn't need them.
 5. Run the test checklist below on both platforms.
@@ -253,6 +281,12 @@ To upgrade:
 - [ ] 20+ shots in a row, watching memory, with no `OutOfMemoryError`.
 - [ ] Capture time is acceptable on your lowest-spec target device.
 - [ ] `clearStampText`: later photos have no stamp.
+- [ ] No black or white flicker when the camera opens, on the first shot, or
+      when tilting the phone (Android).
+- [ ] Take several photos quickly: every thumbnail appears with the right
+      stamp, and Done or close wait until the last file is written.
+- [ ] Photo quality button: lowering it makes smaller files (check the
+      `PhotoStamper: Saved` log line), and the next photo uses the new value.
 - [ ] Leave and reopen the camera screen: the camera is released, with no
       "camera in use" errors.
 - [ ] iOS: everything above, since iOS hasn't been tested yet.

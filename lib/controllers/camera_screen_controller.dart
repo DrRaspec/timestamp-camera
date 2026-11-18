@@ -19,8 +19,16 @@ class CameraScreenController extends GetxController
   final camera = Rxn<CameraController>();
   final error = RxnString();
 
-  /// True while a photo is being captured, stamped and compressed.
   final busy = false.obs;
+
+  /// Shots whose file is still being stamped and written in the background.
+  final pending = <String>{}.obs;
+
+  final shutterBlink = false.obs;
+
+  /// JPEG quality in percent, chosen by the user. Lower gives smaller files.
+  /// Applies from the next photo.
+  final quality = PhotoStamp.defaultQuality.obs;
   final showGrid = false.obs;
   final flash = FlashMode.off.obs;
   final shots = <String>[].obs;
@@ -46,6 +54,8 @@ class CameraScreenController extends GetxController
     WidgetsBinding.instance.removeObserver(this);
     _clock?.cancel();
     _releaseCamera();
+    // Stops stamping other screens' photos and frees the stamper's bitmap.
+    PhotoStamp.clear().ignore();
     super.onClose();
   }
 
@@ -81,20 +91,17 @@ class CameraScreenController extends GetxController
         orElse: () => cameras.first,
       );
 
-      await PhotoStamp.setText([name, formatStamp(DateTime.now())]);
+      await _applyStamp();
 
       // veryHigh (1080p) matches the 16:9 preview and is much faster to
       // capture and stamp than max (12MP).
-      controller =
-          CameraController(back, ResolutionPreset.veryHigh, enableAudio: false);
+      controller = CameraController(
+        back,
+        ResolutionPreset.veryHigh,
+        enableAudio: false,
+      );
       await controller.initialize();
       await controller.setFlashMode(flash.value);
-      // Speed: ZSL takes the photo from already-buffered frames, and a lower
-      // camera JPEG quality is fine because the stamper re-encodes anyway.
-      if (await controller.isZeroShutterLagSupported()) {
-        await controller.setZeroShutterLagEnabled(true);
-      }
-      await controller.setJpegImageQuality(85);
 
       // The screen closed or the app went to the background meanwhile.
       if (isClosed || _inBackground) {
@@ -131,17 +138,60 @@ class CameraScreenController extends GetxController
       return;
     }
     busy.value = true;
+    shutterBlink.value = true;
+    Future.delayed(
+      const Duration(milliseconds: 80),
+      () => shutterBlink.value = false,
+    );
     try {
-      await PhotoStamp.setText([name, formatStamp(DateTime.now())]);
+      await _applyStamp();
+      // Returns once the photo is captured. Stamping and writing the file go
+      // on in the background, so the shutter is free for the next photo.
       final shot = await controller.takePicture();
-      if (!isClosed) shots.add(shot.path);
+      if (isClosed) return;
+      pending.add(shot.path);
+      shots.add(shot.path);
+      _finishShot(shot.path);
     } catch (e) {
       if (!isClosed && camera.value != null) {
-        Get.snackbar('Capture failed', '$e',
-            snackPosition: SnackPosition.BOTTOM);
+        Get.snackbar(
+          'Capture failed',
+          '$e',
+          snackPosition: SnackPosition.BOTTOM,
+        );
       }
     } finally {
       busy.value = false;
+    }
+  }
+
+  /// Hands the native side the text and quality for the next photo. Called
+  /// right before every shot so the time is current.
+  Future<void> _applyStamp() => PhotoStamp.setText([
+    name,
+    formatStamp(DateTime.now()),
+  ], quality: quality.value);
+
+  void setQuality(int value) =>
+      quality.value = value.clamp(PhotoStamp.minQuality, PhotoStamp.maxQuality);
+
+  Future<void> _finishShot(String path) async {
+    try {
+      await PhotoStamp.waitUntilWritten(path);
+      final bytes = await File(path).length();
+      debugPrint('Photo size: ${(bytes / 1024).toStringAsFixed(1)} KB');
+    } catch (e) {
+      shots.remove(path);
+      File(path).delete().ignore();
+      if (!isClosed) {
+        Get.snackbar(
+          'Capture failed',
+          '$e',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      }
+    } finally {
+      pending.remove(path);
     }
   }
 
@@ -157,20 +207,23 @@ class CameraScreenController extends GetxController
       await controller.setFlashMode(next);
       flash.value = next;
     } on CameraException catch (e) {
-      Get.snackbar('Flash not available', '${e.description}',
-          snackPosition: SnackPosition.BOTTOM);
+      Get.snackbar(
+        'Flash not available',
+        '${e.description}',
+        snackPosition: SnackPosition.BOTTOM,
+      );
     }
   }
 
   void toggleGrid() => showGrid.toggle();
 
   void deleteShot(int index) {
+    if (pending.contains(shots[index])) return;
     final path = shots.removeAt(index);
     File(path).delete().ignore();
   }
 
-  /// Leaving is blocked while a photo is still being stamped.
-  bool get canLeave => !busy.value;
+  bool get canLeave => !busy.value && pending.isEmpty;
 
   void close() {
     if (canLeave) Get.back();
